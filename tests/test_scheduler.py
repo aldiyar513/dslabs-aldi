@@ -67,3 +67,35 @@ def test_run_until_idle_reports_whether_work_remains():
     heartbeat()
     assert s.run_until_idle(max_ms=1000) is False
     assert s.now_ms() == 1000
+
+
+def test_step_runs_exactly_one_live_event_and_peek_looks_ahead():
+    s = SimScheduler()
+    seen = []
+    s.call_later(10, lambda: seen.append("a"))
+    cancel = s.call_later(20, lambda: seen.append("b"))
+    cancel()
+    s.call_later(30, lambda: seen.append("c"))
+
+    first = s.step()
+    assert first and first.number == 1 and first.t_ms == 10 and seen == ["a"]
+    assert s.peek().due_ms == 30, "cancelled event is skipped"
+    assert s.now_ms() == 10, "peek does not move time"
+
+    second = s.step()
+    assert second.number == 2 and second.t_ms == 30 and seen == ["a", "c"]
+
+    idle = s.step()
+    assert not idle and idle.t_ms == 30 and str(idle) == "nothing pending @ 30 ms"
+    assert s.peek() is None
+    assert s.steps == 2
+
+
+def test_step_loop_runs_to_the_end():
+    s = SimScheduler()
+    seen = []
+    for i in range(3):
+        s.call_later(i * 10, lambda i=i: seen.append(i))
+    while s.step():
+        pass
+    assert seen == [0, 1, 2]

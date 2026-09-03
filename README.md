@@ -137,6 +137,16 @@ cluster.diagram()        # a space-time diagram: lifelines per node, arrows per 
 cluster.explain("n3")    # what one node sent and received, and its own timeline
 ```
 
+Or take the run one event at a time, which turns it into a predict-then-check
+exercise:
+
+```python
+cluster.pending()        # what is in flight or armed, soonest first
+cluster.peek()           # the next event, without running it
+cluster.step()           # run exactly one event and show everything it caused
+while cluster.step(): pass   # and on to the end
+```
+
 The diagram is the picture from the readings, drawn from a real run: a
 dropped message ends in a red cross, a duplicate is a second orange arrow, and
 a slow message overtaken by a fast one is visibly crossed. Client requests are

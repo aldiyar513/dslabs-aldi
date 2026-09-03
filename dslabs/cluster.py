@@ -9,6 +9,9 @@
     cluster.diagram()       # space-time diagram (renders inline in a notebook)
     cluster.explain("n3")   # what one node saw
 
+Or take it one event at a time: ``cluster.peek()`` says what happens next,
+``cluster.step()`` runs it and shows everything it caused.
+
 This is only the three simulator objects wired together; ``cluster.scheduler``,
 ``cluster.network``, and ``cluster.nodes`` are all there if you need them.
 """
@@ -17,7 +20,7 @@ from typing import Any, Callable, Sequence
 
 from .network import Rule, SimNetwork
 from .protocols import Node
-from .scheduler import SimScheduler
+from .scheduler import Next, SimScheduler, Step
 from .diagram import Diagram
 from .trace import Explanation, MessageTable, Timeline, Trace
 
@@ -69,6 +72,18 @@ class Cluster:
 
     def run_until_idle(self, max_ms: int = 60_000) -> bool:
         return self.scheduler.run_until_idle(max_ms)
+
+    def pending(self) -> list[tuple[int, str]]:
+        """What is in flight or armed, as ``(due_ms, description)``, soonest first."""
+        return self.scheduler.pending()
+
+    def peek(self) -> Next | None:
+        """The next event, without running it."""
+        return self.scheduler.peek()
+
+    def step(self) -> Step:
+        """Run exactly one event and show everything it caused. Falsy when idle."""
+        return self.scheduler.step()
 
     def add_rule(self, rule: Rule) -> None:
         self.network.add_rule(rule)

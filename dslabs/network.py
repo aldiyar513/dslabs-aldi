@@ -24,7 +24,7 @@ import random
 from typing import Any, Callable, Iterable
 
 from .protocols import Message, Scheduler
-from .trace import Trace
+from .trace import Trace, describe
 
 # One pending delivery: (milliseconds from now until delivery, message).
 Delivery = tuple[int, Message]
@@ -146,6 +146,7 @@ class SimNetwork:
                 self.trace.snapshot(node)
 
         deliver.__qualname__ = f"deliver({frm}->{to})"
+        deliver.description = f"deliver #{msg_id} {frm} -> {to}: {describe(payload)}"
         self.scheduler.call_later(at, deliver)
 
 

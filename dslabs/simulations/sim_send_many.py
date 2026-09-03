@@ -56,6 +56,7 @@ class SimSendMany:
             def client_put(node_id: str = node_id, value: int = i) -> None:
                 self.cluster.put(node_id, "x", value)
 
+            client_put.description = f"client writes x={i} at {node_id}"
             self.scheduler.call_later(i * self.interval_ms, client_put)
 
         self.idle = self.cluster.run_until_idle(max_ms)

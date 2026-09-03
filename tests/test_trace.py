@@ -173,3 +173,32 @@ def test_verbose_prints_events_as_they_happen(capsys):
     out = capsys.readouterr().out
     assert "client   put x=1" in out and "deliver  #1 replicate x=1" in out
     assert "timer" not in out
+
+
+def test_step_shows_everything_one_delivery_caused():
+    cluster = Cluster(NodeMultiLeader, 3, seed=1)
+    cluster.put("n1", "x", 1)
+    assert sorted(d for _, d in cluster.pending()) == [
+        "deliver #1 n1 -> n2: replicate x=1",
+        "deliver #2 n1 -> n3: replicate x=1",
+    ]
+
+    nxt = cluster.peek()
+    step = cluster.step()
+    assert step and step.t_ms == nxt.due_ms and step.trigger == nxt.description
+    assert [ev.kind for ev in step.events] == ["deliver", "state"]
+    assert str(step).startswith(f"Step 1 @ {step.t_ms} ms: deliver #")
+    assert "<b>Step 1 @" in step._repr_html_() and "<table" in step._repr_html_()
+
+    assert cluster.step()
+    assert not cluster.step()
+    assert cluster.values("x") == {"n1": 1, "n2": 1, "n3": 1}
+
+
+def test_step_reports_node_timers_by_name_and_node():
+    cluster = Cluster(TimerNode, 1)
+    cluster.put("n1", "x", 1)
+    assert cluster.peek().description == "timer on_timeout at n1"
+    step = cluster.step()
+    assert step.trigger == "timer on_timeout at n1"
+    assert [ev.kind for ev in step.events] == ["timer_fired", "note", "state"]

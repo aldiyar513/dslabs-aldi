@@ -269,6 +269,9 @@ class Timeline:
     def __getitem__(self, i):
         return self.events[i]
 
+    def __repr__(self) -> str:
+        return str(self)
+
     def __str__(self) -> str:
         return "\n".join(str(ev) for ev in self.events) or "(no events)"
 
@@ -326,6 +329,9 @@ class MessageTable:
     def _cells(self) -> list[tuple[str, ...]]:
         return [(f"#{r.msg_id}", f"{r.sent_ms} ms", r.frm, r.to, describe(r.msg), r.fate) for r in self.rows]
 
+    def __repr__(self) -> str:
+        return str(self)
+
     def __str__(self) -> str:
         return _text_table(self._HEADER, self._cells(), right_align=(0, 1)) if self.rows else "(no messages)"
 
@@ -339,6 +345,9 @@ class Explanation:
         self.received = received
         self.sent = sent
         self.timeline = timeline
+
+    def __repr__(self) -> str:
+        return str(self)
 
     def __str__(self) -> str:
         n = self.node_id
