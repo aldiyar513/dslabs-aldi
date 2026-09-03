@@ -51,3 +51,7 @@ class NodeMultiLeader:
             self.receive(msg["key"], msg["value"])
         else:
             raise ValueError(f"Unknown message type in {msg!r}")
+
+    # What the trace and diagrams show as this node's state
+    def brief_state(self) -> dict[str, Any]:
+        return dict(self.store)

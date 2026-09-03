@@ -33,6 +33,13 @@ class Transport(Protocol):
         """Send ``msg`` to the node called ``to``."""
         ...
 
+    def note(self, text: str) -> None:
+        """Write a note onto this node's timeline, for the trace and diagrams.
+
+        Debugging only: it must never affect what the algorithm does.
+        """
+        ...
+
 
 class Scheduler(Protocol):
     """Clock and timers."""
@@ -54,6 +61,10 @@ class Node(Protocol):
     scheduler)``, where ``peers`` lists every node id in the cluster, including
     this node's own id. A ``@dataclass`` with those four fields, in that order,
     satisfies the constructor; see ``dslabs.nodes.NodeMultiLeader``.
+
+    Optionally, a node may also define ``brief_state() -> dict``. If it does,
+    the simulator snapshots it after every delivery, timer, and client request
+    and shows changes on the node's timeline and in diagrams.
     """
 
     node_id: str

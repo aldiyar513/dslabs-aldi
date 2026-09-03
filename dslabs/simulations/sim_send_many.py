@@ -15,10 +15,10 @@ import argparse
 import random
 from typing import Any, Callable
 
-from dslabs.network import SimNetwork, drop
+from dslabs.cluster import Cluster
+from dslabs.network import drop
 from dslabs.nodes import load_node_class
 from dslabs.protocols import Node
-from dslabs.scheduler import SimScheduler
 
 
 class SimSendMany:
@@ -37,39 +37,29 @@ class SimSendMany:
         self.num_messages = num_messages
         self.interval_ms = interval_ms
 
-        self.scheduler = SimScheduler()
-        self.network = SimNetwork(self.scheduler, seed=self.seed, latency_ms=(50, 200), verbose=verbose)
+        self.cluster = Cluster(node_class, num_nodes, seed=self.seed, latency_ms=(50, 200), verbose=verbose)
         if drop_prob > 0:
-            self.network.add_rule(drop(drop_prob))
-
-        node_ids = [f"n{i}" for i in range(num_nodes)]
-        self.nodes: dict[str, Node] = {}
-        for nid in node_ids:
-            node = node_class(nid, node_ids, self.network.endpoint(nid), self.scheduler)
-            if not isinstance(node, Node):
-                raise TypeError(
-                    f"{type(node).__name__} does not implement the Node interface "
-                    "(needs node_id, peers, on_message, client_put, client_get)"
-                )
-            self.network.register(nid, node.on_message)
-            self.nodes[nid] = node
+            self.cluster.add_rule(drop(drop_prob))
+        self.scheduler = self.cluster.scheduler
+        self.network = self.cluster.network
+        self.nodes = self.cluster.nodes
+        self.trace = self.cluster.trace
 
         self.values: dict[str, Any] = {}
         self.idle = True
 
     def run(self, max_ms: int = 60_000) -> dict[str, Any]:
         """Issue the writes, run the cluster until quiet, and return each node's ``x``."""
-        node_ids = list(self.nodes)
         for i in range(self.num_messages):
-            node = self.nodes[self.rng.choice(node_ids)]
+            node_id = self.rng.choice(self.cluster.node_ids)
 
-            def client_put(node: Node = node, value: int = i) -> None:
-                node.client_put("x", value)
+            def client_put(node_id: str = node_id, value: int = i) -> None:
+                self.cluster.put(node_id, "x", value)
 
             self.scheduler.call_later(i * self.interval_ms, client_put)
 
-        self.idle = self.scheduler.run_until_idle(max_ms)
-        self.values = {nid: node.client_get("x") for nid, node in self.nodes.items()}
+        self.idle = self.cluster.run_until_idle(max_ms)
+        self.values = self.cluster.values("x")
         return self.values
 
 
@@ -81,7 +71,9 @@ def main() -> None:
     parser.add_argument("--interval", type=int, default=1000, help="ms between writes (default: %(default)s)")
     parser.add_argument("--drop", type=float, default=0.0, help="probability of dropping a message (default: %(default)s)")
     parser.add_argument("--seed", type=int, default=None, help="random seed (default: random)")
-    parser.add_argument("--verbose", action="store_true", help="print every network event as it happens")
+    parser.add_argument("--verbose", action="store_true", help="print every event as it happens")
+    parser.add_argument("--messages-table", action="store_true", help="print the per-message table afterwards")
+    parser.add_argument("--svg", metavar="FILE", help="save a space-time diagram of the run to FILE")
     args = parser.parse_args()
 
     sim = SimSendMany(
@@ -94,11 +86,16 @@ def main() -> None:
         verbose=args.verbose,
     )
     values = sim.run()
+    if args.messages_table:
+        print(sim.trace.messages())
     print(f"seed: {sim.seed}")
     print(f"network: {sim.network.stats}")
     print(f"final x per node: {values}")
     if not sim.idle:
         print(f"note: stopped at {sim.scheduler.now_ms()} ms with timers still pending")
+    if args.svg:
+        sim.trace.diagram().save(args.svg)
+        print(f"diagram saved to {args.svg}")
 
 
 if __name__ == "__main__":

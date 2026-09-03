@@ -7,3 +7,4 @@ dist/
 
 # Reference solutions live on the instructor's machine only.
 solutions/
+.ipynb_checkpoints/
