@@ -10,17 +10,25 @@ cell):
 - ``trace.timeline()``: every event in time order
 - ``trace.diagram()``: a space-time diagram, as SVG
 - ``trace.explain(node_id)``: what one node sent, received, and did
+
+For an animated replay, ``trace.save_json(path)`` exports the run for the
+standalone viewer at ``dslabs/viewer.html``, and ``trace.save_viewer(path)``
+writes a single HTML file with the run embedded, ready to open in a browser.
 """
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from html import escape
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Sequence
 
 from .protocols import Message
 
 if TYPE_CHECKING:
     from .diagram import Diagram
+
+VIEWER = Path(__file__).with_name("viewer.html")
+_VIEWER_PLACEHOLDER = "/*DSLABS_TRACE_PLACEHOLDER*/"
 
 MESSAGE_KINDS = ("send", "drop", "deliver")
 TIMER_KINDS = ("timer_set", "timer_fired", "timer_cancelled")
@@ -229,6 +237,36 @@ class Trace:
 
     def print(self) -> None:
         print(self.timeline())
+
+    # --- export -------------------------------------------------------------
+
+    def to_dict(self) -> dict[str, Any]:
+        """The whole trace as plain data: ``{"format", "nodes", "end_ms", "events"}``."""
+        end_ms = max([self.now()] + [ev.t_ms for ev in self.events])
+        return {
+            "format": "dslabs-trace/1",
+            "nodes": list(self.nodes),
+            "end_ms": end_ms,
+            "events": [{k: v for k, v in asdict(ev).items() if v is not None} for ev in self.events],
+        }
+
+    def to_json(self, indent: int | None = None) -> str:
+        return json.dumps(self.to_dict(), indent=indent, default=str)
+
+    def save_json(self, path: str | Path) -> Path:
+        """Write the trace as JSON, for loading into the animated viewer (``dslabs/viewer.html``)."""
+        path = Path(path)
+        path.write_text(self.to_json(indent=1))
+        return path
+
+    def save_viewer(self, path: str | Path) -> Path:
+        """Write a self-contained copy of the animated viewer with this trace embedded."""
+        template = VIEWER.read_text()
+        assert _VIEWER_PLACEHOLDER in template, "viewer.html has lost its trace placeholder"
+        payload = self.to_json().replace("</", "<\\/")  # never let message text close the script tag
+        path = Path(path)
+        path.write_text(template.replace(_VIEWER_PLACEHOLDER, payload))
+        return path
 
 
 # --- views ----------------------------------------------------------------

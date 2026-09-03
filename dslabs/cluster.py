@@ -16,6 +16,7 @@ This is only the three simulator objects wired together; ``cluster.scheduler``,
 ``cluster.network``, and ``cluster.nodes`` are all there if you need them.
 """
 
+from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from .network import Rule, SimNetwork
@@ -108,3 +109,11 @@ class Cluster:
 
     def explain(self, node_id: str) -> Explanation:
         return self.trace.explain(node_id)
+
+    def save_json(self, path) -> Path:
+        """Export the run for the animated viewer at ``dslabs/viewer.html``."""
+        return self.trace.save_json(path)
+
+    def save_viewer(self, path) -> Path:
+        """Write a self-contained animated replay of the run as one HTML file."""
+        return self.trace.save_viewer(path)

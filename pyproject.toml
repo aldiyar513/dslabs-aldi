@@ -15,6 +15,9 @@ dependencies = []
 where = ["."]
 include = ["dslabs*"]
 
+[tool.setuptools.package-data]
+dslabs = ["viewer.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

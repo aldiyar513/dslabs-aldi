@@ -202,3 +202,29 @@ def test_step_reports_node_timers_by_name_and_node():
     step = cluster.step()
     assert step.trigger == "timer on_timeout at n1"
     assert [ev.kind for ev in step.events] == ["timer_fired", "note", "state"]
+
+
+def test_trace_exports_to_json_for_the_viewer(tmp_path):
+    import json
+
+    cluster = Cluster(TimerNode, 2, seed=1)
+    cluster.put("n1", "x", 1)
+    cluster["n1"].transport.note("contains </script> on purpose")
+    cluster.run_until(500)
+
+    data = cluster.trace.to_dict()
+    assert data["format"] == "dslabs-trace/1"
+    assert data["nodes"] == ["n1", "n2"]
+    assert data["end_ms"] == 500
+    assert [ev["kind"] for ev in data["events"]][:2] == ["client", "timer_set"]
+    assert all(v is not None for ev in data["events"] for v in ev.values()), "None fields are stripped"
+
+    path = cluster.save_json(tmp_path / "run.json")
+    assert json.loads(path.read_text()) == json.loads(cluster.trace.to_json())
+
+    page = cluster.save_viewer(tmp_path / "run.html").read_text()
+    assert page.startswith("<!doctype html>")
+    assert "DSLABS_TRACE_PLACEHOLDER" not in page
+    assert '"format": "dslabs-trace/1"' in page
+    assert "contains <\\/script> on purpose" in page, "script-closing sequences are escaped"
+    assert page.count("</script>") == 2, "only the viewer's own two script tags close"

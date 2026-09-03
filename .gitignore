@@ -8,3 +8,7 @@ dist/
 # Reference solutions live on the instructor's machine only.
 solutions/
 .ipynb_checkpoints/
+
+# Written by examples/demo.ipynb
+examples/run.json
+examples/run.html

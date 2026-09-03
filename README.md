@@ -166,6 +166,12 @@ Timers show up on a node's timeline when their callback is one of the node's
 methods or a closure inside one, which is the normal case. Pass
 `verbose=True` to `Cluster` to see events printed as they happen.
 
+For an animated replay, `cluster.save_viewer("run.html")` writes one
+self-contained page: open it in a browser to watch messages travel between
+the nodes, with play, pause, a time slider, and next/previous event stepping.
+`cluster.save_json("run.json")` exports the run instead, for loading into the
+viewer at `dslabs/viewer.html`.
+
 ## Breaking the network
 
 Rules are installed with `cluster.add_rule(rule)` and lifted with
