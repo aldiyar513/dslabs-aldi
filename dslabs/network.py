@@ -1,138 +1,210 @@
-"""A small, deterministic network simulator with fault injection.
+"""Deterministic network simulator with fault injection and a message trace.
 
-Key ideas:
+How a message travels:
 
-- Messages are scheduled as (deliver_at_ms, payload) pairs called an Action.
-- To simulate network errors, you can register transformation rules (drop,
-  delay, duplicate, partition) that rewrite the pending Action list for each
-  send.
-- Delivery uses the simulated clock and scheduler, so tests can advance time
-  and deterministically observe behavior.
+1. A node calls ``transport.send(to, msg)`` on its ``Endpoint``. The endpoint
+   stamps ``msg["from"]`` and hands the message to the network.
+2. The network turns it into one pending delivery, ``(latency_ms, msg)``, with
+   a random latency drawn from the network's base range.
+3. Every installed rule is applied in order. A rule maps the list of pending
+   deliveries to a new list: it can add delay, drop deliveries, or add copies.
+4. Each surviving delivery is scheduled on the scheduler. When it comes due,
+   the message is JSON round-tripped, so the receiver gets its own copy exactly
+   as it would over a real wire, and passed to the receiver's handler.
+
+Every send, drop, and delivery is appended to ``network.trace`` with its
+simulated timestamp and tallied in ``network.stats``.
+
+All randomness comes from a ``random.Random(seed)`` owned by the network, so
+the same seed always replays the same run.
 """
 
+import json
 import random
-from typing import Callable, Dict, Any, List, Tuple, Set
-from .scheduler import SimScheduler
+from dataclasses import dataclass
+from typing import Callable, Iterable
 
-Action = List[Tuple[int, Dict[str, Any]]]
+from .protocols import Message, Scheduler
+
+# One pending delivery: (milliseconds from now until delivery, message).
+Delivery = tuple[int, Message]
+
+# A rule rewrites the pending deliveries of one send. It is called as
+# ``rule(frm, to, deliveries, rng)`` and returns the new list of deliveries.
+Rule = Callable[[str, str, list[Delivery], random.Random], list[Delivery]]
+
+Handler = Callable[[Message], None]
+
+
+@dataclass
+class TraceEvent:
+    t_ms: int
+    kind: str  # "send", "drop", or "deliver"
+    frm: str
+    to: str
+    msg: Message
+
+    def __str__(self) -> str:
+        body = {k: v for k, v in self.msg.items() if k != "from"}
+        return f"@{self.t_ms:>7} ms  {self.frm:>4} -> {self.to:<4}  {self.kind:<7}  {body}"
+
+
+class Endpoint:
+    """One node's connection to the network. Implements ``Transport``."""
+
+    def __init__(self, network: "SimNetwork", node_id: str) -> None:
+        self.node_id = node_id
+        self._network = network
+
+    def send(self, to: str, msg: Message) -> None:
+        self._network._send(self.node_id, to, msg)
 
 
 class SimNetwork:
     """Event-driven simulated network.
 
-    - `register(node_id, handler)`: Register a per-node receive handler. The
-      handler is used to deliver a message to a node.
-    - `add_rule(rule)`: Install a communication rule in the network, used for
-      simulation latency, network partitions, etc.
-    - `send(to, msg)`: schedule delivery of a message to a node, applying
-      all rules to the initial Action list.
-
-    The random seed controls base delays to make runs reproducible.
+    - ``endpoint(node_id)``: the ``Transport`` a node uses to send.
+    - ``register(node_id, handler)``: where to deliver that node's messages.
+    - ``add_rule(rule)`` / ``remove_rule(rule)``: install or lift a fault rule.
+    - ``trace`` / ``stats`` / ``print_trace()``: what happened.
     """
 
-    def __init__(self, scheduler: SimScheduler, seed: int = 0):
+    def __init__(
+        self,
+        scheduler: Scheduler,
+        seed: int = 0,
+        latency_ms: tuple[int, int] = (30, 80),
+        verbose: bool = False,
+    ) -> None:
         self.scheduler = scheduler
-        self.handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {}
-        self.rules: List[Callable[[str, str, Dict[str, Any], Action], Action]] = []
         self.rng = random.Random(seed)
-        self.stats = {
-            "dropped_messages": 0,
-            "delivered_messages": 0,
-            "duplicated_messages": 0,
-        }
+        self.latency_ms = latency_ms
+        self.verbose = verbose
+        self.rules: list[Rule] = []
+        self.trace: list[TraceEvent] = []
+        self.stats = {"sent": 0, "delivered": 0, "dropped": 0, "duplicated": 0}
+        self._endpoints: dict[str, Endpoint] = {}
+        self._handlers: dict[str, Handler] = {}
 
-    def register(self, node_id: str, handler: Callable[[Dict[str, Any]], None]) -> None:
-        """Associate `node_id` with a message handler function.
+    def endpoint(self, node_id: str) -> Endpoint:
+        """Return the transport for ``node_id``, creating it on first use."""
+        if node_id not in self._endpoints:
+            self._endpoints[node_id] = Endpoint(self, node_id)
+        return self._endpoints[node_id]
 
-        Handlers receive the message dict as delivered.
-        """
-        self.handlers[node_id] = handler
+    def register(self, node_id: str, handler: Handler) -> None:
+        """Deliver messages addressed to ``node_id`` by calling ``handler(msg)``."""
+        self.endpoint(node_id)
+        self._handlers[node_id] = handler
 
-    def add_rule(self, rule) -> None:
-        """Append a message transformation rule to the pipeline.
-
-        Rules are callables that modify each action in a list in some way. The
-        rule is called with (from, to, message, actions) so that actions can be
-        modified based on the from and to nodes, for example, if the network is
-        partitioned.
-        """
+    def add_rule(self, rule: Rule) -> None:
         self.rules.append(rule)
 
-    def send(self, to: str, msg: Dict[str, Any]) -> None:
-        """Schedule delivery of `msg` to `to`, applying all rules.
+    def remove_rule(self, rule: Rule) -> None:
+        self.rules.remove(rule)
 
-        A small random base delay is added before rules run to avoid lockstep
-        behavior. Rules can introduce more delay, drops, duplicates, etc.
-        """
-        base_delay = 30 + int(self.rng.random() * 50)
-        actions: Action = [(base_delay, msg)]
-        frm = msg.get("from", "?")
-        for rule in self.rules:
-            actions = rule(frm, to, msg, actions, stats=self.stats)
-        for at, payload in actions:
+    def print_trace(self) -> None:
+        for event in self.trace:
+            print(event)
 
-            def deliver(to=to, payload=payload):
-                h = self.handlers.get(to)
-                if h:
-                    h(payload)
-                self.stats["delivered_messages"] += 1
+    def _send(self, frm: str, to: str, msg: Message) -> None:
+        if to not in self._endpoints:
+            raise ValueError(
+                f"{frm} sent a message to unknown node {to!r}; "
+                f"known nodes are {sorted(self._endpoints)}"
+            )
+        msg = {**msg, "from": frm}
+        try:
+            json.dumps(msg)
+        except (TypeError, ValueError) as e:
+            raise TypeError(f"message from {frm} to {to} is not JSON-serialisable: {msg!r}") from e
 
-            self.scheduler.call_later(at, deliver)
+        self.stats["sent"] += 1
+        self._record(TraceEvent(self.scheduler.now_ms(), "send", frm, to, msg))
 
+        deliveries: list[Delivery] = [(self.rng.randint(*self.latency_ms), msg)]
+        for rule in list(self.rules):
+            before = len(deliveries)
+            deliveries = rule(frm, to, deliveries, self.rng)
+            after = len(deliveries)
+            if after < before:
+                self.stats["dropped"] += before - after
+                for _ in range(before - after):
+                    self._record(TraceEvent(self.scheduler.now_ms(), "drop", frm, to, msg))
+            elif after > before:
+                self.stats["duplicated"] += after - before
 
-def drop(p=0.1):
-    """Return a rule that drops each pending delivery with prob `p`."""
-    import random
+        for at, payload in deliveries:
+            self._schedule(at, frm, to, payload)
 
-    def _rule(frm, to, msg, actions: Action, stats=None):
-        out = [a for a in actions if random.random() > p]
-        if stats is not None:
-            stats["dropped_messages"] += len(actions) - len(out)
-        return out
+    def _schedule(self, at: int, frm: str, to: str, payload: Message) -> None:
+        def deliver() -> None:
+            handler = self._handlers.get(to)
+            if handler is None:
+                raise RuntimeError(
+                    f"a message for {to} came due but no handler is registered; "
+                    f"call network.register({to!r}, node.on_message)"
+                )
+            copy = json.loads(json.dumps(payload))
+            self.stats["delivered"] += 1
+            self._record(TraceEvent(self.scheduler.now_ms(), "deliver", frm, to, copy))
+            handler(copy)
 
-    return _rule
+        deliver.__qualname__ = f"deliver({frm}->{to})"
+        self.scheduler.call_later(at, deliver)
 
-
-def delay(min_ms=100, max_ms=300):
-    """Return a rule that adds a random delay in [min_ms, max_ms]."""
-    import random
-
-    def _rule(frm, to, msg, actions: Action, stats=None):
-        out = []
-        for at, payload in actions:
-            extra = random.randint(min_ms, max_ms)
-            out.append((at + extra, payload))
-        return out
-
-    return _rule
-
-
-def duplicate(p=0.05):
-    """Return a rule that duplicates deliveries with prob `p`."""
-    import random
-
-    def _rule(frm, to, msg, actions: Action, stats=None):
-        out = list(actions)
-        for at, payload in actions:
-            if random.random() < p:
-                out.append((at + 1, payload.copy()))
-        if stats is not None:
-            stats["duplicated_messages"] += len(out) - len(actions)
-        return out
-
-    return _rule
+    def _record(self, event: TraceEvent) -> None:
+        self.trace.append(event)
+        if self.verbose:
+            print(event)
 
 
-def partition(cut: Set[Tuple[str, str]]):
-    """Return a rule that blocks traffic for pairs in `cut`.
+# --- Fault rules -----------------------------------------------------------
+#
+# Each function below returns a rule. Rules are ordinary functions with the
+# signature ``rule(frm, to, deliveries, rng) -> deliveries``, so you can write
+# your own in a few lines; see the README for an example.
 
-    The `cut` set contains undirected pairs like (`n1`,`n2`).
+
+def delay(min_ms: int, max_ms: int) -> Rule:
+    """Add a random extra delay in ``[min_ms, max_ms]`` to every delivery."""
+
+    def rule(frm: str, to: str, deliveries: list[Delivery], rng: random.Random) -> list[Delivery]:
+        return [(at + rng.randint(min_ms, max_ms), msg) for at, msg in deliveries]
+
+    return rule
+
+
+def drop(p: float) -> Rule:
+    """Drop each delivery independently with probability ``p``."""
+
+    def rule(frm: str, to: str, deliveries: list[Delivery], rng: random.Random) -> list[Delivery]:
+        return [d for d in deliveries if rng.random() >= p]
+
+    return rule
+
+
+def duplicate(p: float) -> Rule:
+    """With probability ``p``, deliver an extra copy of a message shortly after the first."""
+
+    def rule(frm: str, to: str, deliveries: list[Delivery], rng: random.Random) -> list[Delivery]:
+        extra = [(at + rng.randint(1, 100), msg) for at, msg in deliveries if rng.random() < p]
+        return deliveries + extra
+
+    return rule
+
+
+def partition(*groups: Iterable[str]) -> Rule:
+    """Drop every message between nodes in different groups.
+
+    Nodes not named in any group together form one remaining group, so
+    ``partition({"n1"})`` isolates n1 and ``partition({"n1", "n2"})`` splits
+    those two off from the rest. Lift the partition with ``remove_rule``.
     """
+    group_of = {node: i for i, group in enumerate(groups) for node in group}
 
-    def _rule(frm, to, msg, actions: Action, stats=None):
-        out = [] if (frm, to) in cut or (to, frm) in cut else actions
-        if stats is not None:
-            stats["dropped_messages"] += len(actions) - len(out)
-        return out
+    def rule(frm: str, to: str, deliveries: list[Delivery], rng: random.Random) -> list[Delivery]:
+        same_side = group_of.get(frm, -1) == group_of.get(to, -1)
+        return deliveries if same_side else []
 
-    return _rule
+    return rule

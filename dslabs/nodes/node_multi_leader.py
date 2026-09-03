@@ -1,65 +1,53 @@
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Tuple
+from typing import Any
+
+from dslabs.protocols import Message, Scheduler, Transport
 
 
 @dataclass
 class NodeMultiLeader:
-    """
-    Multi-leader nodes. Any node can accept writes and broadcasts to others.
+    """Naive multi-leader replication.
+
+    Any node accepts a write, applies it locally, and broadcasts it to every
+    peer, which applies it on arrival. Nothing is retried, deduplicated, or
+    ordered. This is the baseline the exercises start from.
     """
 
     node_id: str
-    peers: List[str]
-    transport: Any
-    scheduler: Any
-    store: Dict[str, Any] = field(default_factory=dict)
-    log: List[Tuple[str, Any]] = field(default_factory=list)
+    peers: list[str]
+    transport: Transport
+    scheduler: Scheduler
+    # Key-value store
+    store: dict[str, Any] = field(default_factory=dict)
+    # Append-only log of everything delivered, in delivery order
+    log: list[tuple[str, Any]] = field(default_factory=list)
 
-    def brief_state(self):
-        return {"id": self.node_id, "kv": dict(self.store)}
-
-    # Client-facing APIs (direct calls from the demo)
-    def client_put(self, key, value):
-        # Accept locally, then replicate to others.
+    # Client-facing API
+    def client_put(self, key: str, value: Any) -> None:
         self.receive_and_replicate(key, value)
 
-    def client_get(self, key):
+    def client_get(self, key: str) -> Any:
         return self.store.get(key)
 
-    # Node internal handlers
-    def receive_and_replicate(self, key, value):
+    # Node internals
+    def receive_and_replicate(self, key: str, value: Any) -> None:
         self.receive(key, value)
-        # Broadcast to all peers
         for peer in self.peers:
             if peer != self.node_id:
-                self.transport.send(
-                    peer,
-                    {
-                        "type": "replicate",
-                        "from": self.node_id,
-                        "key": key,
-                        "value": value,
-                    },
-                )
+                self.transport.send(peer, {"type": "replicate", "key": key, "value": value})
 
-    def receive(self, key, value):
+    def receive(self, key: str, value: Any) -> None:
         # Received messages are delivered immediately
         self.deliver(key, value)
 
-    def deliver(self, key, value):
-        """
-        Deliver the message to this node.
-         1. Update the key-value store
-         2. Append the delivery to the permanent log
-        """
+    def deliver(self, key: str, value: Any) -> None:
+        """Apply a message to this node: update the store, append to the log."""
         self.store[key] = value
         self.log.append((key, value))
 
     # Network handler
-    def on_message(self, msg):
-        typ = msg.get("type")
-        if typ == "replicate":
-            # Apply incoming replication from any peer.
+    def on_message(self, msg: Message) -> None:
+        if msg["type"] == "replicate":
             self.receive(msg["key"], msg["value"])
         else:
-            raise ValueError(f"Unknown type in message {msg!r}")
+            raise ValueError(f"Unknown message type in {msg!r}")

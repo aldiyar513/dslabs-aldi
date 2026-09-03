@@ -1,50 +1,72 @@
-"""Interfaces (Protocols) that decouple algorithms from I/O and timers.
+"""Interfaces that separate node algorithms from the machinery that runs them.
 
-Why this matters for learning:
-- Your algorithm code depends only on these minimal abstractions, so you can
-  swap in the deterministic simulator or a real runtime without changes.
+A node only ever touches two things it does not own:
+
+- a ``Transport``, to send messages to other nodes, and
+- a ``Scheduler``, to read the clock and to schedule timers.
+
+Keep algorithm code free of anything else (no threads, sleeps, sockets, or
+real time) and it will run unchanged in the deterministic simulator or in any
+future real runtime.
 """
 
-from typing import Protocol, Callable, Dict, Any
+from typing import Any, Callable, Protocol, runtime_checkable
+
+# Messages are plain, JSON-serialisable dicts. The transport stamps the sender's
+# id into ``msg["from"]`` on every send, so a receiver always knows who sent it.
+Message = dict[str, Any]
+
+# Returned by ``Scheduler.call_later``. Call it to cancel the pending callback.
+Cancel = Callable[[], None]
 
 
 class Transport(Protocol):
-    """Message transport abstraction used by nodes.
+    """Sends messages on behalf of one node.
 
-    Implementations should be fire-and-forget (no return value). Delivery may
-    be delayed, dropped, duplicated, or reordered depending on the runtime.
+    Sending is fire-and-forget: there is no return value and no delivery
+    guarantee. Depending on the network, a message may be delayed, dropped,
+    duplicated, or reordered. Reliability, if you need it, is the algorithm's
+    job.
     """
 
-    def send(self, to: str, msg: Dict[str, Any]) -> None:
-        """Send `msg` to peer `to`.
-
-        `msg` is a JSON-serializable dict. Implementations may add metadata
-        (e.g., headers) but should preserve the payload.
-        """
-        raise NotImplemented
-
-    def register(self, node_id: str, handler: Callable[[Dict[str, Any]], None]) -> None:
-        """Register a receive handler for `node_id`.
-
-        The handler is called with the decoded message dict upon delivery.
-        """
-        raise NotImplemented
-
-
-class SchedulerCancel(Protocol):
-    """Callable returned by `Scheduler.call_later` to cancel a pending event."""
-
-    def __call__(self) -> None:
-        raise NotImplemented
+    def send(self, to: str, msg: Message) -> None:
+        """Send ``msg`` to the node called ``to``."""
+        ...
 
 
 class Scheduler(Protocol):
-    """Scheduler abstraction; used by nodes to schedule future work."""
-
-    def call_later(self, ms: int, cb: Callable[[], None]) -> SchedulerCancel:
-        """Schedule callback `cb` to run in `ms` milliseconds."""
-        raise NotImplemented
+    """Clock and timers."""
 
     def now_ms(self) -> int:
-        """Return current time in milliseconds for this scheduler domain."""
-        raise NotImplemented
+        """Current time in milliseconds."""
+        ...
+
+    def call_later(self, ms: int, cb: Callable[[], None]) -> Cancel:
+        """Run ``cb()`` after ``ms`` milliseconds. Returns a function that cancels it."""
+        ...
+
+
+@runtime_checkable
+class Node(Protocol):
+    """What the simulation expects from a node class.
+
+    Node classes are constructed as ``NodeClass(node_id, peers, transport,
+    scheduler)``, where ``peers`` lists every node id in the cluster, including
+    this node's own id. A ``@dataclass`` with those four fields, in that order,
+    satisfies the constructor; see ``dslabs.nodes.NodeMultiLeader``.
+    """
+
+    node_id: str
+    peers: list[str]
+
+    def on_message(self, msg: Message) -> None:
+        """Called by the network when a message is delivered to this node."""
+        ...
+
+    def client_put(self, key: str, value: Any) -> None:
+        """A client asks this node to write ``key = value``."""
+        ...
+
+    def client_get(self, key: str) -> Any:
+        """A client asks this node for its current value of ``key``."""
+        ...

@@ -1,99 +1,81 @@
-"""Deterministic clock and scheduler utilities for simulations.
+"""Deterministic discrete-event scheduler.
 
-Use these helpers to control time explicitly during tests and demos.
-
-- `SimClock`: monotonically increasing time in milliseconds; you call
-  `advance(ms)` to move time forward.
-- `SimScheduler`: schedules callbacks relative to the simulated time and
-  executes them when `run_due()` is called.
-
-Typical loop:
-
-    scheduler.run_due()
-    clock.advance(10)
-
-This avoids real threads and non-determinism while developing algorithms.
+Simulated time only moves when you ask the scheduler to run. ``run_until(t)``
+executes every callback due at or before ``t`` in due-time order, jumping the
+clock to each callback's due time as it goes. Nothing sleeps and nothing runs
+in the background, so a run given the same inputs always produces the same
+result, and a simulated hour takes milliseconds of real time.
 """
 
 import heapq
-from typing import Callable, List, Tuple
+from dataclasses import dataclass, field
+from typing import Callable
+
+from .protocols import Cancel
 
 
-class SimClock:
-    """Monotonic simulated clock measured in milliseconds."""
-
-    def __init__(self) -> None:
-        self.t = 0
-
-    def now_ms(self) -> int:
-        """Return the current simulated time in milliseconds."""
-        return self.t
-
-    def advance(self, ms: int) -> None:
-        """Advance simulated time by `ms` milliseconds (non-negative)."""
-        self.t += ms
+@dataclass(order=True)
+class _Event:
+    when: int
+    seq: int  # creation order; breaks ties so equal due times run first-in first-out
+    cb: Callable[[], None] = field(compare=False)
+    live: bool = field(default=True, compare=False)
 
 
 class SimScheduler:
-    """Scheduler backed by a min-heap of scheduled callbacks.
+    """Implements the ``Scheduler`` protocol over a simulated clock."""
 
-    Schedule callbacks using `call_later(ms, cb)`; get a cancel function back.
-    Execute ready callbacks by calling `run_due()` after advancing the clock.
-    A counter ensures FIFO ordering for callbacks scheduled for the same time.
-    """
+    def __init__(self) -> None:
+        self._now = 0
+        self._heap: list[_Event] = []
+        self._seq = 0
 
-    def __init__(self, clock: SimClock) -> None:
-        self.clock = clock
-        self.heap: List[Tuple[int, int, Callable[[], None], bool]] = []
-        self._counter = 0  # tie-breaker for stable ordering
+    def now_ms(self) -> int:
+        return self._now
 
-    def call_later(self, ms: int, cb: Callable[[], None]):
-        """Schedule `cb` to run after `ms` milliseconds of simulated time.
+    def call_later(self, ms: int, cb: Callable[[], None]) -> Cancel:
+        if ms < 0:
+            raise ValueError(f"call_later delay must be >= 0, got {ms}")
+        self._seq += 1
+        event = _Event(self._now + ms, self._seq, cb)
+        heapq.heappush(self._heap, event)
 
-        Returns a zero-arg cancel function; if invoked before the callback is
-        due, the callback will not run.
-        """
-        when = self.clock.now_ms() + ms
-        self._counter += 1
-        event = [when, self._counter, cb, True]
-        heapq.heappush(self.heap, event)
-
-        def cancel():
-            event[3] = False
+        def cancel() -> None:
+            event.live = False
 
         return cancel
 
-    def run_due(self) -> None:
-        """Run all callbacks whose scheduled time is <= current time."""
-        while self.heap and self.heap[0][0] <= self.clock.now_ms():
-            when, _, cb, live = heapq.heappop(self.heap)
-            if live:
-                cb()
+    def run_until(self, t_ms: int) -> None:
+        """Run every callback due at or before ``t_ms``, then set the clock to ``t_ms``."""
+        while self._heap and self._heap[0].when <= t_ms:
+            self._run_next()
+        self._now = max(self._now, t_ms)
 
-    def dump_state(self, n: int = 5) -> str:
-        """Return a human-readable snapshot of timer state and queued events.
+    def run_until_idle(self, max_ms: int) -> bool:
+        """Run until no callbacks remain, or until the next one is due after ``max_ms``.
 
-        Args:
-            n: Maximum number of queued events to include (default: 5).
-
-        The snapshot includes the current simulated time, total queued events,
-        and details for the first `n` events in due-time order, without
-        changing the underlying queue.
+        Returns True if the scheduler went idle. Returns False if it stopped at
+        ``max_ms`` with work still pending, which is what happens for algorithms
+        that keep re-arming timers (heartbeats, retries, and the like).
         """
-        now = self.clock.now_ms()
-        events = list(self.heap)  # Copy inspection without changing the original heap
-        lines = [
-            f"SimScheduler @ t = {now}ms",
-            f"queued = {len(events)} (showing first {min(n, len(events))})",
-        ]
-        i = 0
-        while i < n:
-            when, counter, cb, live = heapq.heappop(events)
-            cb_name = getattr(cb, "__name__", None)
-            cb_desc = cb_name if isinstance(cb_name, str) else repr(cb)
-            remaining = max(0, when - now)
-            lines.append(
-                f"#{i:02d} due @ {when}ms (in {remaining}ms) counter={counter} live={live} cb={cb_desc}"
-            )
-            i += 1
-        return "\n".join(lines)
+        while self._heap and self._heap[0].when <= max_ms:
+            self._run_next()
+        if self.pending():
+            self._now = max(self._now, max_ms)
+            return False
+        return True
+
+    def pending(self) -> list[tuple[int, str]]:
+        """Live callbacks as ``(due_ms, callback_name)`` pairs, soonest first."""
+        return sorted(
+            (ev.when, getattr(ev.cb, "__qualname__", repr(ev.cb)))
+            for ev in self._heap
+            if ev.live
+        )
+
+    def _run_next(self) -> None:
+        event = heapq.heappop(self._heap)
+        if event.live:
+            event.live = False
+            self._now = event.when
+            event.cb()
