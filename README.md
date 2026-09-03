@@ -2,18 +2,17 @@
 
 A small, deterministic simulator for trying out distributed algorithms.
 
-You write a *node*: a Python class that reacts to messages and timers. The
-simulator runs a cluster of your nodes in a single process on a simulated clock,
-with a network that delays, drops, duplicates, and partitions messages exactly
-as you tell it to. Because time is simulated, a minute of cluster time takes
-milliseconds, and a run with the same seed replays identically, so the failure
-you are chasing happens the same way every time. And because every message,
-timer, and state change is recorded, you can see exactly what happened and why.
+## How it works
 
-You will use this scaffold for the exercises in the course. Their purpose is to
-bring the abstract concepts from the videos and readings to life. Nothing
-teaches the challenges of distributed systems like experiencing, and then
-fixing, the failures that occur in them.
+You write a node, a Python class that reacts to timers and messages from other nodes.
+The simulator runs a cluster of your nodes in a single process on a simulated clock, with a network that can be configured to delay, drop, duplicate, and partition messages exactly as you tell it to.
+A simulation run with the same seed replays identically, so failures can be reproduced.
+Every message, timer, and state change is recorded, so you can see exactly what happened and why.
+
+You will use this scaffold for the exercises in the course.
+The idea is to bring the concepts from the videos and readings to life.
+You will learn about distributed systems by experiencing and then
+fixing the failures that occur in them.
 
 ## Install
 
@@ -34,34 +33,38 @@ python -m dslabs.simulations.sim_send_many --drop 0.5 --verbose
 
 The tests run against the starter node, `NodeMultiLeader`, which is
 deliberately naive. Expect one pass and two failures in the replication tests.
-Making them pass is the exercise.
+Making them pass is the exercise — see the Session 2 pre-class work.
 
 For a guided tour in a notebook, open `examples/demo.ipynb`.
 
 ## How it fits together
 
+A node sees the outside world through two objects.
+
+- Its `transport` handles communication via the network and has
+`send(to, msg)` for sending message `msg` to node `to`.
+- Its `scheduler` has `now_ms()` for the current simulation time and `call_later(ms, callback)` to schedule a future event, calling the `callback` function after `ms` milliseconds. The returned value is another callback function which can be used to cancel the event, allowing one event to prevent/interrupt another.
+
+That's the whole interface.
+
+File structure:
+
 | Where                          | What                                                                     |
 |--------------------------------|--------------------------------------------------------------------------|
-| `dslabs/protocols.py`          | The interfaces: `Transport`, `Scheduler`, and what a `Node` must provide |
-| `dslabs/scheduler.py`          | `SimScheduler`: the simulated clock and timers                           |
-| `dslabs/network.py`            | `SimNetwork`: message delivery and fault rules                           |
-| `dslabs/trace.py`              | The record of everything that happened, and views over it               |
-| `dslabs/diagram.py`            | Space-time diagrams of a trace                                           |
-| `dslabs/cluster.py`            | `Cluster`: the pieces above wired together, ready to drive              |
-| `dslabs/nodes/`                | Node implementations. Yours go here                                      |
-| `dslabs/simulations/`          | Workloads that build a cluster and drive it                              |
-| `tests/`                       | The properties your node is measured against                             |
-
-A node sees the outside world through exactly two objects. Its `transport` has
-`send(to, msg)`. Its `scheduler` has `now_ms()` and `call_later(ms, callback)`,
-which returns a function that cancels the timer. That is the whole interface,
-and it is why algorithm code must never sleep, spawn threads, or read the real
-clock.
+| `dslabs/protocols.py`          | The interfaces: `Transport`, `Scheduler`, and what a `Node` must provide. |
+| `dslabs/scheduler.py`          | `SimScheduler`: the simulated clock and timers.                           |
+| `dslabs/network.py`            | `SimNetwork`: message delivery and fault rules.                           |
+| `dslabs/trace.py`              | The record of everything that happened, and views over it.               |
+| `dslabs/diagram.py`            | Space-time diagrams of a trace.                                           |
+| `dslabs/cluster.py`            | `Cluster`: the pieces above wired together, ready to drive from a simulation. |
+| `dslabs/nodes/`                | Node implementations. Yours go here.                                      |
+| `dslabs/simulations/`          | Workloads that build a cluster and drive it.                              |
+| `tests/`                       | The properties your node is measured against.                             |
 
 ## Writing a node
 
-Copy `dslabs/nodes/node_multi_leader.py` and change the behaviour. The shape
-is:
+Copy `dslabs/nodes/node_multi_leader.py` and change the behaviour.
+The outline is:
 
 ```python
 from dataclasses import dataclass, field
@@ -91,71 +94,63 @@ class MyNode:
         return dict(self.store)   # optional: what diagrams show as your state
 ```
 
-Messages are plain dicts and must be JSON-serialisable. The network stamps the
-sender into `msg["from"]` for you, and every receiver gets its own copy, just
-as it would over a real wire.
+Messages are plain dicts and must be JSON-serialisable.
+The network stamps the sender into `msg["from"]` for you, and every receiver gets its own copy, just as it would over a real connection.
 
 Export your class from `dslabs/nodes/__init__.py` and run the tests against
 it:
 
 ```bash
 python -m pytest --node MyNode
-python -m pytest --node dslabs.nodes.my_node:MyNode   # without exporting
+python -m pytest --node dslabs.nodes.my_node:MyNode    # without exporting
 python -m pytest --node NodeMultiLeader --node MyNode  # compare two
 ```
 
 ## Driving the simulator yourself
 
-`Cluster` builds a cluster of one node class and lets you play the client:
+`Cluster` builds a cluster of one node class and lets you be the client.
 
 ```python
 from dslabs import Cluster, drop
 from dslabs.nodes import NodeMultiLeader
 
-cluster = Cluster(NodeMultiLeader, 3, seed=1)   # nodes n1, n2, n3
-cluster.add_rule(drop(0.2))
-cluster.put("n2", "x", 1)
-cluster.run_until(2000)        # simulated time moves only here
-cluster.values("x")            # {'n1': 1, 'n2': 1, 'n3': None}
+cluster = Cluster(NodeMultiLeader, 3, seed=1)  # nodes n1, n2, n3
+cluster.add_rule(drop(0.2))  # the network drops 20% of messages
+cluster.put("n2", "x", 1)  # Write a value to n2, which will then replicate it
+cluster.run_until(2000)  # simulated time moves only here
+cluster.values("x")  # {'n1': 1, 'n2': 1, 'n3': None}
 ```
 
 `run_until(t)` runs every timer and delivery due by time `t`, in order.
 `run_until_idle(max_ms)` runs until nothing is pending, or until `max_ms` if
-your algorithm keeps re-arming timers. `cluster.scheduler.pending()` lists
+your algorithm keeps adding timers.
+`cluster.scheduler.pending()` lists
 what is still queued.
 
 ## Seeing what happened
 
-Everything a run does is recorded, and you can look at it four ways. In a
-notebook, each of these renders as a table or a picture when it is the last
-expression in a cell. In a terminal, `print(...)` it.
+Everything a run does is recorded and you can look at it four ways.
+In a notebook, each of these renders as a table or a picture when it is the last expression in a cell.
+In a terminal, `print` it.
 
 ```python
-cluster.messages()       # one row per message: who, to whom, delivered after how long, or dropped by which rule
-cluster.timeline()       # every event in time order: sends, deliveries, drops, client requests, timers, state, notes
-cluster.diagram()        # a space-time diagram: lifelines per node, arrows per message, drawn to scale
-cluster.explain("n3")    # what one node sent and received, and its own timeline
+cluster.messages()  # one row per message: who, to whom, delivered after how long, or dropped by which rule
+cluster.timeline()  # every event in time order: sends, deliveries, drops, client requests, timers, state, notes
+cluster.diagram()  # a space-time diagram: lifelines per node, arrows per message, drawn to scale
+cluster.explain("n3")  # what one node sent and received, and its own timeline
 ```
 
 Or take the run one event at a time, which turns it into a predict-then-check
-exercise:
+exercise.
 
 ```python
-cluster.pending()        # what is in flight or armed, soonest first
-cluster.peek()           # the next event, without running it
-cluster.step()           # run exactly one event and show everything it caused
-while cluster.step(): pass   # and on to the end
+cluster.pending()  # events in flight or ready to go, soonest first
+cluster.peek()  # see the next event, without running it
+cluster.step()  # run exactly one event and show everything it caused
+while cluster.step(): pass  # keep going until the end
 ```
 
-The diagram is the picture from the readings, drawn from a real run: a
-dropped message ends in a red cross, a duplicate is a second orange arrow, and
-a slow message overtaken by a fast one is visibly crossed. Client requests are
-green dots, timers are dotted lines from when they were set to when they fired,
-and the node's state appears under its lifeline whenever it changes. Hover
-over anything for the full detail. `cluster.diagram(nodes=["n1", "n2"],
-t_range=(0, 1000))` zooms in; `.save("run.svg")` writes it out.
-
-Two optional hooks make your own node's story visible:
+Two optional hooks make your own node's story visible.
 
 - `brief_state()`: return a dict, and the simulator snapshots it after every
   delivery, timer, and client request, showing changes on the timeline.
@@ -175,7 +170,7 @@ viewer at `dslabs/viewer.html`.
 ## Breaking the network
 
 Rules are installed with `cluster.add_rule(rule)` and lifted with
-`cluster.remove_rule(rule)`. The built-in ones are:
+`cluster.remove_rule(rule)`.
 
 | Rule                              | Effect                                                    |
 |-----------------------------------|-----------------------------------------------------------|
@@ -210,8 +205,8 @@ seed and look at the diagram.
 
 ## Under the hood
 
-`Cluster` is only the three simulator objects wired together. If you want to
-assemble them yourself:
+`Cluster` is only the three simulator objects (scheduler, network, and nodes) wired together.
+If you want to assemble them yourself:
 
 ```python
 from dslabs import SimNetwork, SimScheduler
@@ -227,5 +222,5 @@ for nid in ids:
 
 nodes["n2"].client_put("x", 1)
 scheduler.run_until(2000)
-scheduler.trace.messages()     # the trace lives on the scheduler
+scheduler.trace.messages()
 ```
