@@ -84,6 +84,7 @@
                   timer: "#805ad5", state: "#1a202c", note: "#4a5568", edge: "#e2e8f0", idle: "#cbd5e0" };
   const SPEEDS = [0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10];   // simulated ms per real ms
   const TIMER_KINDS = new Set(["timer_set", "timer_fired", "timer_cancelled"]);
+  const NODE_R = 28, DOT_R = 6;   // a message travels from the rim of one node to the rim of the other
 
   // The whole viewer is a pure function of (trace, t): every frame recomputes what is
   // in flight and what each node shows, so scrubbing backwards works for free.
@@ -174,7 +175,7 @@
       const p = view.pos[id];
       const g = el("g", { transform: `translate(${p.x},${p.y})` }, nodes);
       const ring = el("circle", { r: 34, fill: "none", stroke: "transparent", "stroke-width": 6 }, g);
-      const circle = el("circle", { r: 28, fill: "#fff", stroke: COLOR.idle, "stroke-width": 2 }, g);
+      const circle = el("circle", { r: NODE_R, fill: "#fff", stroke: COLOR.idle, "stroke-width": 2 }, g);
       const label = el("text", { y: 5, "text-anchor": "middle", "font-size": 15, "font-weight": "bold", fill: COLOR.state }, g);
       label.textContent = id;
       const client = el("text", { y: -42, "text-anchor": "middle", "font-size": 12, fill: COLOR.client, class: "halo" }, g);
@@ -240,8 +241,13 @@
     // Messages in flight, one dot per copy that will be delivered, plus the dropped copies
     dotsLayer.innerHTML = "";
     for (const m of view.messages) {
-      const a = view.pos[m.frm], b = view.pos[m.to];
-      if (!a || !b || t < m.sent) continue;
+      const a0 = view.pos[m.frm], b0 = view.pos[m.to];
+      if (!a0 || !b0 || t < m.sent) continue;
+      // Shorten the path so the dot starts just outside the sender and ends just outside the receiver
+      const dx = b0.x - a0.x, dy = b0.y - a0.y, dist = Math.hypot(dx, dy), gap = NODE_R + DOT_R;
+      if (dist <= 2 * gap) continue;   // a node messaging itself, or nodes too close to draw between
+      const ux = dx / dist, uy = dy / dist;
+      const a = { x: a0.x + ux * gap, y: a0.y + uy * gap }, b = { x: b0.x - ux * gap, y: b0.y - uy * gap };
       m.deliveries.forEach((td, i) => {
         if (t >= td) return;
         const f = (t - m.sent) / (td - m.sent);
@@ -283,7 +289,7 @@
   }
   function dot(x, y, color, m, labels, title) {
     const g = el("g", {}, dotsLayer);
-    el("circle", { cx: x, cy: y, r: 6, fill: color }, g);
+    el("circle", { cx: x, cy: y, r: DOT_R, fill: color }, g);
     el("title", {}, g).textContent = `#${m.id} ${m.frm} -> ${m.to}: ${describe(m.msg)} (sent @ ${m.sent} ms)`;
     if (labels) { const tx = el("text", { x: x + 9, y: y - 8, "font-size": 11, fill: color, class: "halo" }, g); tx.textContent = describe(m.msg); }
   }
