@@ -23,6 +23,9 @@ class NodeSingleLeader:
     # Append-only log of everything delivered, in delivery order
     log: list[tuple[str, Any]] = field(default_factory=list)
     leader_id: str = 'n1'
+    next_seq: int = 1
+    expected_seq: int = 1
+    buffer: dict[int, Message] = field(default_factory=dict)
 
 
     # Client-facing API
@@ -35,10 +38,22 @@ class NodeSingleLeader:
 
     # Node internals
     def receive_and_replicate(self, key: str, value: Any) -> None:
+        seq = self.next_seq
+        self.next_seq += 1
+
         self.receive(key, value)
+
         for peer in self.peers:
             if peer != self.node_id:
-                self.transport.send(peer, {"type": "replicate", "key": key, "value": value})
+                self.transport.send(
+                    peer,
+                    {
+                        "type": "replicate",
+                        "key": key,
+                        "value": value,
+                        "seq": seq
+                    }
+                )
 
     def receive(self, key: str, value: Any) -> None:
         # Received messages are delivered immediately
@@ -52,7 +67,23 @@ class NodeSingleLeader:
     # Network handler
     def on_message(self, msg: Message) -> None:
         if msg["type"] == "replicate":
-            self.receive(msg["key"], msg["value"])
+            seq = msg["seq"]
+
+            if seq == self.expected_seq:
+                self.receive(msg["key"], msg["value"])
+                self.expected_seq += 1
+
+                while self.expected_seq in self.buffer:
+                    buffered_msg = self.buffer.pop(self.expected_seq)
+                    self.receive(
+                        buffered_msg["key"],
+                        buffered_msg["value"]
+                    )
+                    self.expected_seq += 1
+
+            elif seq > self.expected_seq:
+                self.buffer[seq] = msg
+
         else:
             raise ValueError(f"Unknown message type in {msg!r}")
 
