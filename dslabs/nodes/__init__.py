@@ -8,8 +8,9 @@ them by class name alone.
 import importlib
 
 from .node_multi_leader import NodeMultiLeader
+from .node_single_leader import NodeSingleLeader
 
-__all__ = ["NodeMultiLeader", "load_node_class"]
+__all__ = ["NodeMultiLeader", "NodeSingleLeader", "load_node_class"]
 
 
 def load_node_class(spec: str) -> type:
