@@ -10,7 +10,7 @@ import importlib
 from .node_multi_leader import NodeMultiLeader
 from .node_single_leader import NodeSingleLeader
 from .node_eager_broadcast import NodeEagerBroadcast
-from .node_single_leader import NodeTotalOrder
+from .node_total_order import NodeTotalOrder
 
 __all__ = ["NodeMultiLeader", "NodeSingleLeader", "NodeTotalOrder", "NodeEagerBroadcast", "load_node_class"]
 
