@@ -9,8 +9,10 @@ import importlib
 
 from .node_multi_leader import NodeMultiLeader
 from .node_single_leader import NodeSingleLeader
+from .node_eager_broadcast import NodeEagerBroadcast
+from .node_single_leader import NodeTotalOrder
 
-__all__ = ["NodeMultiLeader", "NodeSingleLeader", "load_node_class"]
+__all__ = ["NodeMultiLeader", "NodeSingleLeader", "NodeTotalOrder", "NodeEagerBroadcast", "load_node_class"]
 
 
 def load_node_class(spec: str) -> type:
