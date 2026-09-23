@@ -19,9 +19,9 @@ class NodeTotalOrderEagerBroadcast:
     '''
     node_id: str
     peers: list[str]
-    scheduler: Scheduler
     transport: Transport
-
+    scheduler: Scheduler
+    
     store: dict[str, Any] = field(default_factory=dict)
     log: list[tuple[str, Any]] = field(default_factory=list) 
 
