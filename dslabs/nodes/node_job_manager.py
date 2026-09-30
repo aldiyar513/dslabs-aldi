@@ -31,20 +31,27 @@ class NodeJobManager(NodeCAS):
             job_submission=True,
             job_id=job_id,
         )
+    def query_job_status(self, job_id: str) -> str:
+        return self._publish(
+            "replicate",
+            operation="get",
+            key=f"job:{job_id}",
+            job_status_query=True,
+            job_id=job_id,
+        )
 
     def deliver(self, msg: dict[str, Any]) -> None:
         # Apply the ordered operation and record its result.
         super().deliver(msg)
 
-        if msg.get("job_submission") and msg["sender"] == self.node_id:
+        if msg.get("job_status_query") and msg["sender"] == self.node_id:
             uid = msg["uid"]
-            stored_job = self.store.get(msg["key"])
+            job = self.operation_results[uid]
 
-            # An identical retry is also considered submitted.
-            submitted = stored_job == msg["new"]
+            status = "not_found" if job is None else "in_progress"
 
             self.responses[uid] = {
-                "type": "submit_job_response",
+                "type": "query_job_status_response",
                 "job_id": msg["job_id"],
-                "job_submitted": submitted,
+                "job_status": status,
             }
