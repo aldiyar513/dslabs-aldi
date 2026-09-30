@@ -13,8 +13,8 @@ from .node_eager_broadcast import NodeEagerBroadcast
 from .node_total_order import NodeTotalOrder
 from .node_total_order_eager_broadcast import NodeTotalOrderEagerBroadcast
 from .node_total_order_gossip import NodeTotalOrderGossip
-
-__all__ = ["NodeMultiLeader", "NodeSingleLeader", "NodeTotalOrder", "NodeEagerBroadcast", "NodeTotalOrderEagerBroadcast", "NodeTotalOrderGossip", "load_node_class"]
+from .node_cas import NodeCAS
+__all__ = ["NodeMultiLeader", "NodeSingleLeader", "NodeTotalOrder", "NodeEagerBroadcast", "NodeTotalOrderEagerBroadcast", "NodeTotalOrderGossip", "NodeCAS", "load_node_class"]
 
 
 def load_node_class(spec: str) -> type:
