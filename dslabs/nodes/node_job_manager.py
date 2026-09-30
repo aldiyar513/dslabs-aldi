@@ -8,6 +8,8 @@ from .node_cas import NodeCAS
 class NodeJobManager(NodeCAS):
     # Request UID -> response available to the client.
     responses: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Subtasks this worker has started executing.
+    executed_tasks: set[tuple[str, int]] = field(default_factory=set)
 
     def submit_job(
         self,
@@ -39,6 +41,7 @@ class NodeJobManager(NodeCAS):
             job_status_query=True,
             job_id=job_id,
         )
+    
 
     def claim_task(self, job_id: str, task_index: int) -> str:
         # Initially, the task key does not exist.
@@ -55,6 +58,35 @@ class NodeJobManager(NodeCAS):
             task_claim=True,
             job_id=job_id,
             task_index=task_index,
+        )
+
+    def _execute_task(self, job_id: str, task_index: int) -> None:
+        job = self.store[f"job:{job_id}"]
+        task_key = f"task:{job_id}:{task_index}"
+
+        claimed_state = {
+            "status": "claimed",
+            "worker": self.node_id,
+        }
+
+        # Execute only while this worker owns the task.
+        if self.store.get(task_key) != claimed_state:
+            return
+
+        action = eval(job["job_action"])
+        result = action(job["job_data"][task_index])
+
+        completed_state = {
+            "status": "complete",
+            "worker": self.node_id,
+            "result": result,
+        }
+
+        # Commit completion only if the task is still claimed by us.
+        self.client_cas(
+            task_key,
+            claimed_state,
+            completed_state,
         )
 
     def deliver(self, msg: dict[str, Any]) -> None:
@@ -87,9 +119,25 @@ class NodeJobManager(NodeCAS):
                 "job_status": status,
             }
         elif msg.get("task_claim"):
+            claimed = self.operation_results[uid]
+
             self.responses[uid] = {
                 "type": "claim_task_response",
                 "job_id": msg["job_id"],
                 "task_index": msg["task_index"],
-                "task_claimed": self.operation_results[uid],
+                "task_claimed": claimed,
             }
+
+            if claimed:
+                job_id = msg["job_id"]
+                task_index = msg["task_index"]
+                task_id = (job_id, task_index)
+
+                if task_id not in self.executed_tasks:
+                    self.executed_tasks.add(task_id)
+
+                    # Execute after the current delivery handler finishes.
+                    self.scheduler.call_later(
+                        0,
+                        lambda: self._execute_task(job_id, task_index),
+                    )
