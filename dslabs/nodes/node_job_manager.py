@@ -40,6 +40,23 @@ class NodeJobManager(NodeCAS):
             job_id=job_id,
         )
 
+    def claim_task(self, job_id: str, task_index: int) -> str:
+        # Initially, the task key does not exist.
+        # Only one worker can change it from None to claimed.
+        return self._publish(
+            "replicate",
+            operation="cas",
+            key=f"task:{job_id}:{task_index}",
+            old=None,
+            new={
+                "status": "claimed",
+                "worker": self.node_id,
+            },
+            task_claim=True,
+            job_id=job_id,
+            task_index=task_index,
+        )
+
     def deliver(self, msg: dict[str, Any]) -> None:
         # Apply the operation after total-order delivery.
         super().deliver(msg)
@@ -68,4 +85,11 @@ class NodeJobManager(NodeCAS):
                 "type": "query_job_status_response",
                 "job_id": msg["job_id"],
                 "job_status": status,
+            }
+        elif msg.get("task_claim"):
+            self.responses[uid] = {
+                "type": "claim_task_response",
+                "job_id": msg["job_id"],
+                "task_index": msg["task_index"],
+                "task_claimed": self.operation_results[uid],
             }
