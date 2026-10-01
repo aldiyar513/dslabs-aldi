@@ -112,6 +112,24 @@ class NodeJobManager(NodeCAS):
                 return False
 
         return True
+    def handle_client_message(self, msg: dict[str, Any]) -> str:
+        """Submit a client request and return its tracking UID."""
+        message_type = msg["type"]
+
+        if message_type == "submit_job":
+            return self.submit_job(
+                job_id=msg["job_id"],
+                job_action=msg["job_action"],
+                job_data=msg["job_data"],
+            )
+
+        elif message_type == "query_job_status":
+            return self.query_job_status(msg["job_id"])
+
+        elif message_type == "get_job_results":
+            return self.get_job_results(msg["job_id"])
+
+        raise ValueError(f"Unknown client message type: {message_type}")
 
     def deliver(self, msg: dict[str, Any]) -> None:
         super().deliver(msg)
