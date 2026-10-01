@@ -50,7 +50,13 @@ class NodeCAS:
     
     # Operation UID -> result, populated only after ordered delivery.
     operation_results: dict[str, Any] = field(default_factory=dict)
+    pending_transmissions: dict[
+        tuple[str, str], dict[str, Any]
+    ] = field(default_factory=dict)
 
+    retry_ms: int = 200
+    retry_scheduled: bool = False
+    
     # Client-facing API
     def client_put(self, key: str, value: Any) -> str:
         return self._publish(
@@ -77,7 +83,7 @@ class NodeCAS:
             new=new,
         )
     
-    def _publish(self, message_type: str, **payload: Any) -> None:
+    def _publish(self, message_type: str, **payload: Any) -> str:
         """Create a new timestamped message at this node."""
         self.clock += 1
         self.next_seq += 1
@@ -96,21 +102,42 @@ class NodeCAS:
         return msg["uid"]
 
     def receive_and_replicate(self, msg: Message) -> None:
-        """Accept and forward each unique network message once."""
         uid = msg["uid"]
 
+        # "from" identifies the immediate network sender.
+        # "sender" identifies the original message creator.
+        immediate_sender = msg.get("from")
+
+        # Send a receipt even for duplicates: the earlier receipt
+        # might have been dropped.
+        if (
+            immediate_sender is not None
+            and immediate_sender != self.node_id
+        ):
+            self.transport.send(
+                immediate_sender,
+                {
+                    "type": "transport_receipt",
+                    "received_uid": uid,
+                },
+            )
+
+        # A duplicate receives a receipt but is not processed again.
         if uid in self.seen:
             return
 
         self.seen.add(uid)
 
-        # A relay preserves the original sender, sequence and timestamp.
         if msg["sender"] != self.node_id:
-            self.clock = max(self.clock, msg["timestamp"]) + 1
+            self.clock = max(
+                self.clock,
+                msg["timestamp"],
+            ) + 1
 
+        # Reliably forward each unique message to the other nodes.
         for peer in self.peers:
             if peer != self.node_id:
-                self.transport.send(peer, dict(msg))
+                self._send_reliably(peer, msg)
 
         sender = msg["sender"]
         seq = msg["seq"]
@@ -120,15 +147,11 @@ class NodeCAS:
 
         self.expected_seq.setdefault(sender, 1)
 
-        # Process this sender's messages in their creation order.
         while self.expected_seq[sender] in pending:
             expected = self.expected_seq[sender]
             next_msg = pending.pop(expected)
 
-            # Advance before processing because processing a write
-            # creates a local acknowledgement.
             self.expected_seq[sender] += 1
-
             self._process_message(next_msg)
 
         self._try_deliver()
@@ -207,9 +230,53 @@ class NodeCAS:
 
     # Network handler
     def on_message(self, msg: Message) -> None:
+        if msg["type"] == "transport_receipt":
+            transmission = (
+                msg["received_uid"],
+                msg["from"],
+            )
+
+            self.pending_transmissions.pop(
+                transmission,
+                None,
+            )
+            return
+
         self.receive_and_replicate(msg)
 
     def brief_state(self) -> dict[str, Any]:
         return dict(self.store)
 
-    
+    def _send_reliably(
+        self,
+        peer: str,
+        msg: dict[str, Any],
+    ) -> None:
+        transmission = (msg["uid"], peer)
+        self.pending_transmissions[transmission] = dict(msg)
+
+        self.transport.send(peer, dict(msg))
+
+        if not self.retry_scheduled:
+            self.retry_scheduled = True
+            self.scheduler.call_later(
+                self.retry_ms,
+                self._retry_pending,
+                )
+
+    def _retry_pending(self) -> None:
+        self.retry_scheduled = False
+
+        # Resend the original messages with unchanged IDs,
+        # timestamps, and sequence numbers.
+        for (_, peer), msg in list(
+            self.pending_transmissions.items()
+        ):
+            self.transport.send(peer, dict(msg))
+
+        if self.pending_transmissions:
+            self.retry_scheduled = True
+            self.scheduler.call_later(
+                self.retry_ms,
+                self._retry_pending,
+            )
